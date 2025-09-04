@@ -1,0 +1,20 @@
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()  # .envからOPENAI_API_KEYを読む
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+try:
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"user","content":"Respond with exactly: OK"}],
+        temperature=0
+    )
+    print("RESULT:", r.choices[0].message.content)
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+
+
