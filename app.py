@@ -1,4 +1,5 @@
 import os
+import re
 from flask import Flask, request, abort
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -42,28 +43,38 @@ def split_text(text, limit=LINE_MAX_CHARS):
         text = text[cut:].lstrip("\n")
     return chunks
 
-SYSTEM_PROMPT = '''You are an accurate translator working only with three languages: Japanese, Korean, and English.
-- Translate the ENTIRE input text completely, no matter how long it is.
-  Never omit, summarize, shorten, or truncate any part. Preserve the
-  original line breaks and paragraph structure.
-- Decide the input's MAIN language. Judge by the dominant words and script,
-  and ignore stray names, numbers, emoji, symbols, or a few foreign words
-  mixed in. The input is always treated as ONE of: Japanese, Korean, or English.
-- Output the translations into the OTHER TWO languages only. Output EXACTLY
-  two translations. Never output a translation in the same language as the
-  input, and never output all three languages.
-- If the input is mainly Japanese, reply in this format:
-[KO] <full Korean translation>
-[EN] <full English translation>
-- If the input is mainly Korean, reply in this format:
-[JA] <full Japanese translation>
-[EN] <full English translation>
-- If the input is mainly English, reply in this format:
-[JA] <full Japanese translation>
-[KO] <full Korean translation>
-- If the input is in none of these three languages, treat it as English and
-  reply with the Japanese and Korean translations.
-- Do not add any explanations or extra commentary. Keep punctuation and names natural.'''
+def detect_lang(text):
+    """文字種で入力言語を判定する（日本語/韓国語/英語のいずれか）。"""
+    if re.search(r"[\uac00-\ud7a3]", text):                       # ハングル → 韓国語
+        return "ko"
+    if re.search(r"[\u3040-\u30ff]", text):                       # ひらがな/カタカナ → 日本語
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", text):                       # 漢字のみ → 日本語とみなす
+        return "ja"
+    return "en"                                                   # ラテン文字など → 英語
+
+# 入力言語ごとの「翻訳先」2言語（タグ, 言語名）
+TARGETS = {
+    "ja": [("KO", "Korean"), ("EN", "English")],
+    "ko": [("JA", "Japanese"), ("EN", "English")],
+    "en": [("JA", "Japanese"), ("KO", "Korean")],
+}
+
+def build_prompt(lang):
+    targets = TARGETS[lang]
+    names = " and ".join(name for _, name in targets)
+    fmt = "\n".join(f"[{tag}] <full {name} translation>" for tag, name in targets)
+    return (
+        "You are an accurate translator.\n"
+        f"Translate the entire input text into {names}.\n"
+        "Translate completely: never omit, summarize, shorten, or truncate any "
+        "part, no matter how long the text is. Preserve the original line breaks "
+        "and paragraph structure.\n"
+        "Reply with EXACTLY the following two lines and nothing else "
+        "(do not output any other language, and do not add explanations):\n"
+        f"{fmt}\n"
+        "Keep punctuation and names natural."
+    )
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -83,10 +94,11 @@ def handle_text(event):
         return
 
     try:
+        system_prompt = build_prompt(detect_lang(user_text))
         completion = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
             ],
             temperature=0.2,
