@@ -25,14 +25,37 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-SYSTEM_PROMPT = '''You are a concise, accurate translator.
+# LINEの1メッセージあたりの文字数上限（5000）。長文はこの単位で分割して送る。
+LINE_MAX_CHARS = 5000
+
+def split_text(text, limit=LINE_MAX_CHARS):
+    """長いテキストをLINEの上限以内のチャンクに分割する。できるだけ改行で区切る。"""
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return chunks
+
+SYSTEM_PROMPT = '''You are an accurate translator.
 - Detect the input language.
-- If the input is Japanese, return exactly two lines:
-[KO] <Korean translation>
-[EN] <English translation>
-- If the input is NOT Japanese, return exactly one line:
-[JA] <Japanese translation>
-- Do not add any explanations or extra lines. Keep punctuation and names natural.'''
+- Translate the ENTIRE input text completely, no matter how long it is.
+  Never omit, summarize, shorten, or truncate any part. Preserve the
+  original line breaks and paragraph structure.
+- If the input is Japanese, reply with the Korean translation followed by
+  the English translation, formatted as:
+[KO] <full Korean translation>
+[EN] <full English translation>
+- If the input is NOT Japanese, reply with the Japanese translation followed
+  by the English translation, formatted as:
+[JA] <full Japanese translation>
+[EN] <full English translation>
+- Do not add any explanations or extra commentary. Keep punctuation and names natural.'''
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -59,16 +82,15 @@ def handle_text(event):
                 {"role": "user", "content": user_text},
             ],
             temperature=0.2,
+            max_tokens=8000,  # 長文でも途中で切れないよう十分な上限を確保
         )
         translated = (completion.choices[0].message.content or "").strip()
         if not translated:
             translated = "翻訳結果が空でした。もう一度お試しください。"
 
-        # 翻訳結果をLINEに返信
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=translated)
-        )
+        # 長文はLINEの1メッセージ上限(5000文字)ごとに分割し、最大5通までまとめて返信
+        messages = [TextSendMessage(text=chunk) for chunk in split_text(translated)[:5]]
+        line_bot_api.reply_message(event.reply_token, messages)
 
     except Exception as e:
         print("翻訳エラー詳細:", e)   # ← ターミナルにエラー原因を出す
