@@ -44,20 +44,40 @@ def split_text(text, limit=LINE_MAX_CHARS):
     return chunks
 
 def detect_lang(text):
-    """文字種で入力言語を判定する（日本語/韓国語/英語のいずれか）。"""
+    """入力言語を判定する。ハングル/かなは文字種で確定し、それ以外は
+    英語かどうかをモデルで判定する（日本語/韓国語/英語/その他のいずれか）。"""
     if re.search(r"[\uac00-\ud7a3]", text):                       # ハングル → 韓国語
         return "ko"
     if re.search(r"[\u3040-\u30ff]", text):                       # ひらがな/カタカナ → 日本語
         return "ja"
-    if re.search(r"[\u4e00-\u9fff]", text):                       # 漢字のみ → 日本語とみなす
-        return "ja"
-    return "en"                                                   # ラテン文字など → 英語
+    return classify_en_or_other(text)                             # 英語か、その他言語か
 
-# 入力言語ごとの「翻訳先」2言語（タグ, 言語名）
+def classify_en_or_other(text):
+    """ラテン文字などの入力が英語か、それ以外の言語かをモデルで判定する。"""
+    try:
+        completion = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content":
+                    "Identify the language of the user's text. Reply with exactly one "
+                    "lowercase word: 'english' if it is mainly English, otherwise 'other'. "
+                    "No punctuation, no explanation."},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=5,
+        )
+        ans = (completion.choices[0].message.content or "").strip().lower()
+        return "en" if "english" in ans else "other"
+    except Exception:
+        return "other"   # 判定に失敗したら3言語に翻訳する側に倒す
+
+# 入力言語ごとの「翻訳先」言語（タグ, 言語名）。入力言語以外の言語に翻訳する。
 TARGETS = {
     "ja": [("KO", "Korean"), ("EN", "English")],
     "ko": [("JA", "Japanese"), ("EN", "English")],
     "en": [("JA", "Japanese"), ("KO", "Korean")],
+    "other": [("JA", "Japanese"), ("KO", "Korean"), ("EN", "English")],
 }
 
 def translate_to(text, target_name):
