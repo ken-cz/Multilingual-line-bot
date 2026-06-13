@@ -60,21 +60,25 @@ TARGETS = {
     "en": [("JA", "Japanese"), ("KO", "Korean")],
 }
 
-def build_prompt(lang):
-    targets = TARGETS[lang]
-    names = " and ".join(name for _, name in targets)
-    fmt = "\n".join(f"[{tag}] <full {name} translation>" for tag, name in targets)
-    return (
-        "You are an accurate translator.\n"
-        f"Translate the entire input text into {names}.\n"
-        "Translate completely: never omit, summarize, shorten, or truncate any "
-        "part, no matter how long the text is. Preserve the original line breaks "
-        "and paragraph structure.\n"
-        "Reply with EXACTLY the following two lines and nothing else "
-        "(do not output any other language, and do not add explanations):\n"
-        f"{fmt}\n"
+def translate_to(text, target_name):
+    """text を target_name（例: "Korean"）の1言語だけに翻訳して返す。"""
+    system_prompt = (
+        f"You are a translator. Translate the user's entire message into {target_name}. "
+        f"Output ONLY the {target_name} translation, with no labels, quotes, notes, or "
+        "explanations. Translate everything completely no matter how long; never omit, "
+        "summarize, or shorten. Preserve the original line breaks and paragraph structure. "
         "Keep punctuation and names natural."
     )
+    completion = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        temperature=0.2,
+        max_tokens=8000,  # 長文でも途中で切れないよう十分な上限を確保
+    )
+    return (completion.choices[0].message.content or "").strip()
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -94,17 +98,13 @@ def handle_text(event):
         return
 
     try:
-        system_prompt = build_prompt(detect_lang(user_text))
-        completion = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.2,
-            max_tokens=8000,  # 長文でも途中で切れないよう十分な上限を確保
-        )
-        translated = (completion.choices[0].message.content or "").strip()
+        targets = TARGETS[detect_lang(user_text)]
+        # 翻訳先の言語ごとに個別に翻訳し、ラベルを付けて結合する
+        parts = []
+        for tag, name in targets:
+            t = translate_to(user_text, name)
+            parts.append(f"[{tag}] {t}" if t else f"[{tag}] （翻訳に失敗しました）")
+        translated = "\n\n".join(parts).strip()
         if not translated:
             translated = "翻訳結果が空でした。もう一度お試しください。"
 
