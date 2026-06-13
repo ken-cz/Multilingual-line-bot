@@ -1,5 +1,6 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, abort
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -24,7 +25,7 @@ if not OPENAI_API_KEY:
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY, timeout=30)
 
 # LINEの1メッセージあたりの文字数上限（5000）。長文はこの単位で分割して送る。
 LINE_MAX_CHARS = 5000
@@ -119,11 +120,20 @@ def handle_text(event):
 
     try:
         targets = TARGETS[detect_lang(user_text)]
-        # 翻訳先の言語ごとに個別に翻訳し、ラベルを付けて結合する
-        parts = []
-        for tag, name in targets:
-            t = translate_to(user_text, name)
-            parts.append(f"[{tag}] {t}" if t else f"[{tag}] （翻訳に失敗しました）")
+
+        # 翻訳先の言語ごとに「並列で」翻訳する（順番待ちで遅くならないように）
+        def translate_one(item):
+            tag, name = item
+            try:
+                t = translate_to(user_text, name)
+            except Exception as e:
+                print("翻訳エラー詳細:", name, e)
+                t = ""
+            return f"[{tag}] {t}" if t else f"[{tag}] （翻訳に失敗しました）"
+
+        with ThreadPoolExecutor(max_workers=len(targets)) as executor:
+            parts = list(executor.map(translate_one, targets))
+
         translated = "\n\n".join(parts).strip()
         if not translated:
             translated = "翻訳結果が空でした。もう一度お試しください。"
